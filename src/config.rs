@@ -5,20 +5,11 @@ use derive_builder::Builder;
 use fast_image_resize::{FilterType, ResizeAlg};
 use serde::Deserialize;
 
-#[derive(Debug, Clone, Deserialize, Parser)]
-pub struct Config {
-    #[clap(long, short, default_value = "3000")]
-    pub port: u16,
-    #[clap(flatten)]
-    pub resize: ResizeConfig,
-}
-
 #[derive(Debug, Clone, Deserialize, Parser, Builder)]
-#[builder(setter(into))]
+#[builder(pattern = "owned")]
 pub struct ResizeConfig {
 
     #[clap(long="resize-path", default_value = "." )]
-    #[builder(default = "\".\".into()")]
     pub path: PathBuf,
 
     /// `lanczos3`  
@@ -29,7 +20,6 @@ pub struct ResizeConfig {
     /// `bilinear`  
     /// `box`  
     #[clap(long="resize-filter-type", default_value = "bilinear" )]
-    #[builder(default = "\"bilinear\".into()")]
     pub filter_type: String,
 
     /// Slow <-
@@ -42,11 +32,18 @@ pub struct ResizeConfig {
     /// -> Fast
     /// (nearest will ignore filter_type)
     #[clap(long="resize-algorithm", default_value = "interpolation" )]
-    #[builder(default = "\"interpolation\".into()")]
     pub algorithm: String,
 }
 
 impl ResizeConfig {
+    pub fn builder() -> ResizeConfigBuilder {
+        ResizeConfigBuilder {
+            path: Some(".".into()),
+            filter_type: Some("bilinear".into()),
+            algorithm: Some("interpolation".into()),
+        }
+    }
+
     pub fn resize_algorithm(&self) -> ResizeAlg {
         let filter_type = match self.filter_type.as_str() {
             "lanczos3" => FilterType::Lanczos3,
@@ -56,7 +53,7 @@ impl ResizeConfig {
             "mitchell" => FilterType::Mitchell,
             "bilinear" => FilterType::Bilinear,
             "box" => FilterType::Box,
-            _ => FilterType::Lanczos3,
+            _ => panic!("Unsupported filter type"),
         };
 
         match self.algorithm.as_str() {
@@ -66,7 +63,7 @@ impl ResizeConfig {
             "interpolation" => ResizeAlg::Interpolation(filter_type),
             "convolution" => ResizeAlg::Convolution(filter_type),
             "nearest" => ResizeAlg::Nearest,
-            _ => ResizeAlg::Interpolation(filter_type),
+            _ => panic!("Unsupported resize algorithm"),
         }
     }
 }

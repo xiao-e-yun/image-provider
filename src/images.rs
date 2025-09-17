@@ -22,11 +22,11 @@ use image::{
 use mime_guess::MimeGuess;
 use serde::Deserialize;
 use tokio::{fs::File, io::AsyncReadExt, sync::Mutex};
-use tracing::info;
+use log::{info, debug};
 
-use crate::config::{Config, ResizeConfig};
+use crate::config::ResizeConfig;
 
-pub fn get_images_router(config: &Config) -> Router {
+pub fn get_images_router(config: ResizeConfig) -> Router {
     let cache = TimedSizedCache::with_size_and_lifespan_and_refresh(200, 30 * 24 * 60 * 60, true);
     let cache = Arc::new(Mutex::new(cache));
 
@@ -36,7 +36,7 @@ pub fn get_images_router(config: &Config) -> Router {
             "/",
             get(|| async { (StatusCode::NOT_FOUND, "File not found".to_string()) }),
         )
-        .with_state((cache, config.resize.clone()))
+        .with_state((cache, config))
 }
 
 type Error = (StatusCode, String);
@@ -83,28 +83,22 @@ async fn provide_images(
     Path(path): Path<PathBuf>,
     range: Option<TypedHeader<Range>>,
 ) -> Result<Response> {
-    info!("Received request for image: {:?}", path);
     let (path, raw_mime) = get_path_and_mime(config.path.clone(), path)?;
-    info!("Resolved path: {:?} with raw mime: {:?}", path, raw_mime);
-
     let dst_mime = query.output()?.unwrap_or(raw_mime);
     let (dst_width, dst_height) = query.size();
     let dpr = query.dpr();
     info!(
-        "Processing image: {:?} to mime: {:?}, size: {:?}x{:?}, dpr: {}",
-        path, dst_mime, dst_width, dst_height, dpr
+        "Processing image: {path:?} to mime: {dst_mime:?}, size: {dst_width:?}x{dst_height:?}, dpr: {dpr}"
     );
 
     let range = range.map(|TypedHeader(range)| range);
-    info!("Range header: {:?}", range);
     let headers = get_response_headers(&dst_mime);
-    info!("Response headers: {:?}", headers);
 
     // If no resizing is needed, serve the original file directly
     let eq_raw = dst_width.is_none() && dst_height.is_none() && dpr == 1 && raw_mime == dst_mime;
     let exclude = matches!(raw_mime, image::ImageFormat::Ico | image::ImageFormat::Gif);
     if eq_raw || exclude {
-        info!("Serving original image: {:?}", path);
+        debug!("Serving original image: {path:?}");
         let file = load_file(&path).await?;
         let body = KnownSize::file(file).await.unwrap();
         let ranged = Ranged::new(range, body);
@@ -112,7 +106,9 @@ async fn provide_images(
     }
 
     if let Some(cached) = cache.lock().await.cache_get(&(path.clone(), query.clone())) {
-        info!("Serving cached image: {:?} with query: {:?}", path, query);
+        debug!(
+            "Serving cached image: {path:?} (mime: {dst_mime:?}, size {dst_width:?}x{dst_height:?}, dpr: {dpr})"
+        );
         let body = KnownSize::seek(Cursor::new(cached.clone())).await.unwrap();
         return Ok((headers, Ranged::new(range, body)).into_response());
     }
@@ -126,18 +122,23 @@ async fn provide_images(
         dpr,
     );
 
-    info!("Resizing image: {:?} with query: {:?}", path, query);
-
     let mut dst_image = Image::new(dst_width, dst_height, src_image.pixel_type().unwrap());
     resize_image(&config, &src_image, &mut dst_image)?;
 
     let bytes = encode_image(dst_mime, &dst_image, src_image.color())?;
 
     // Cache the processed image
-    cache.lock().await.cache_set((path, query), bytes.clone());
+    cache.lock().await.cache_set((path.clone(), query), bytes.clone());
+    debug!(
+        "Cached processed image: {:?} (mime: {:?}, size {:?}x{:?}, dpr: {})",
+        &path, dst_mime, dst_width, dst_height, dpr
+    );
 
     let body = KnownSize::seek(Cursor::new(bytes)).await.unwrap();
 
+    debug!(
+        "Serving processed image: {path:?} (mime: {dst_mime:?}, size {dst_width:?}x{dst_height:?}, dpr: {dpr})"
+    );
     Ok((headers, Ranged::new(range, body)).into_response())
 }
 
@@ -163,22 +164,22 @@ fn find_image_mime(mime: MimeGuess) -> Option<ImageFormat> {
 }
 
 fn get_response_headers(image_format: &ImageFormat) -> HeaderMap {
-    info!("Setting response headers for format: {:?}", image_format);
+    debug!("Setting response headers for format: {image_format:?}");
     let mut headers = HeaderMap::new();
     for (name, value) in [
         (CONTENT_TYPE, image_format.to_mime_type()),
         (CACHE_CONTROL, "public, max-age=31536000"),
         (X_CONTENT_TYPE_OPTIONS, "nosniff"),
     ] {
-        info!("Setting header: {}: {}", name, value);
+        debug!("Setting header: {name}: {value}");
         headers.insert(name, HeaderValue::from_static(value));
     }
-    info!("Response headers set: {:?}", headers);
+    debug!("Response headers set: {headers:?}");
     headers
 }
 
 async fn load_file(path: &PathBuf) -> Result<File> {
-    info!("Loading file: {:?}", path);
+    debug!("Loading file: {path:?}");
     File::open(&path).await.map_err(|_| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
