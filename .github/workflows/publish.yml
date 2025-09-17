@@ -1,45 +1,53 @@
-name: Release
-
-permissions:
-  contents: write
-
 on:
   push:
     tags:
       - v[0-9]+.*
-      
+
+name: Publish
+
+permissions:
+  id-token: write
+
 jobs:
+  crates_publish:
+    name: Publish (crates.io)
+
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Update version
+        shell: bash
+        run: |
+          VERSION=$(git describe --tags | grep -o '^v\?[0-9]\+\.[0-9]\+\.[0-9]\+' | sed 's/^v//')
+          sed "s/^version = \".*\"$/version = \"$VERSION\"/" Cargo.toml > Cargo.toml.temp
+          mv -f Cargo.toml.temp Cargo.toml
+
+      - run: rustup toolchain install nightly --profile minimal --no-self-update
+
+      - uses: Swatinem/rust-cache@v2
+
+      - name: cargo login
+        run: cargo login ${{ secrets.CARGO_REGISTRY_TOKEN }}
+
+      - name: "cargo release publish"
+        run: |-
+          cargo publish \
+            --allow-dirty \
+            --no-verify \
+
+  #-- Create GitHub Release.
   create-release:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - uses: taiki-e/create-gh-release-action@v1
         with:
-          # (required) GitHub token for creating GitHub Releases.
-          token: ${{ secrets.GH_TOKEN }}
-
-  build-frontend:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
-      
-      - name: Install dependencies
-        working-directory: frontend
-        run: bun install
-
-      - name: Build frontend
-        working-directory: frontend
-        run: bun run build
-      
-      - name: Upload frontend
-        uses: actions/upload-artifact@v4
-        with:
-          name: frontend
-          path: frontend/dist
+          token: ${{ secrets.GITHUB_TOKEN }}
 
   upload-assets:
-    needs: [create-release, build-frontend]
+    needs: create-release
     strategy:
       matrix:
         include:
@@ -52,23 +60,18 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
-
-      - uses: actions/download-artifact@v4
-        with:
-          name: frontend
-          path: frontend/dist
-
-      # selecting a toolchain either by action or manual `rustup` calls should happen
-      # before the plugin, as the cache uses the current rustc version as its cache key
+      - name: Update version
+        shell: bash
+        run: |
+          VERSION=$(git describe --tags | grep -o '^v\?[0-9]\+\.[0-9]\+\.[0-9]\+' | sed 's/^v//')
+          sed "s/^version = \".*\"$/version = \"$VERSION\"/" Cargo.toml > Cargo.toml.temp
+          mv -f Cargo.toml.temp Cargo.toml
       - run: rustup toolchain install nightly --profile minimal --no-self-update
-
-      - uses: Swatinem/rust-cache@v2
-
       - uses: taiki-e/upload-rust-binary-action@v1
         with:
           # (required) Comma-separated list of binary names (non-extension portion of filename) to build and upload.
           # Note that glob pattern is not supported yet.
-          bin: post-archiver-viewer
+          bin: images-provider
           # (optional) Target triple, default is host triple.
           # This is optional but it is recommended that this always be set to
           # clarify which target you are building for if macOS is included in
@@ -83,5 +86,6 @@ jobs:
           # [default value: windows]
           # [possible values: all, unix, windows, none]
           zip: windows
+          features: _cli
           # (required) GitHub token for uploading assets to GitHub Releases.
-          token: ${{ secrets.GH_TOKEN }}
+          token: ${{ secrets.GITHUB_TOKEN }}

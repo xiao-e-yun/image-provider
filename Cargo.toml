@@ -32,8 +32,8 @@ clap-verbosity-flag = { version = "3.0.4", optional = true }
 name = "image_provider"
 
 [features]
-cli = ["local-ip-address", "qrcode", "console", "env_logger", "clap-verbosity-flag"]
+_cli = ["local-ip-address", "qrcode", "console", "env_logger", "clap-verbosity-flag"]
 
 [[bin]]
 name = "image-provider"
-required-features = ["cli"]
+required-features = ["_cli"]
