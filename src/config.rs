@@ -1,5 +1,3 @@
-use std::path::PathBuf;
-
 use clap::Parser;
 use derive_builder::Builder;
 use fast_image_resize::{FilterType, ResizeAlg};
@@ -8,9 +6,6 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize, Parser, Builder)]
 #[builder(pattern = "owned")]
 pub struct ResizeConfig {
-
-    #[clap(name="resize-images-path", long, default_value = "." )]
-    pub path: PathBuf,
 
     /// `lanczos3`  
     /// `gaussian`  
@@ -38,7 +33,6 @@ pub struct ResizeConfig {
 impl ResizeConfig {
     pub fn builder() -> ResizeConfigBuilder {
         ResizeConfigBuilder {
-            path: Some(".".into()),
             filter_type: Some("lanczos3".into()),
             algorithm: Some("interpolation".into()),
         }

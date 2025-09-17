@@ -19,16 +19,16 @@ use image::{
     codecs::{jpeg::JpegEncoder, png::PngEncoder, webp::WebPEncoder},
     load_from_memory, ColorType, DynamicImage, ImageEncoder, ImageFormat,
 };
+use log::{debug, info};
 use mime_guess::MimeGuess;
 use serde::Deserialize;
 use tokio::{fs::File, io::AsyncReadExt, sync::Mutex};
-use log::{info, debug};
 
 pub mod config;
 
 pub use config::*;
 
-pub fn get_images_router(config: ResizeConfig) -> Router {
+pub fn get_images_router(root: PathBuf, config: ResizeConfig) -> Router {
     let cache = TimedSizedCache::with_size_and_lifespan_and_refresh(200, 30 * 24 * 60 * 60, true);
     let cache = Arc::new(Mutex::new(cache));
 
@@ -38,16 +38,22 @@ pub fn get_images_router(config: ResizeConfig) -> Router {
             "/",
             get(|| async { (StatusCode::NOT_FOUND, "File not found".to_string()) }),
         )
-        .with_state((cache, config))
+        .with_state(ImageState {
+            root,
+            config,
+            cache,
+        })
 }
 
 type Error = (StatusCode, String);
 type Result<T, E = Error> = std::result::Result<T, E>;
 
-type ImageState = (
-    Arc<Mutex<TimedSizedCache<(PathBuf, ImageQuery), Bytes>>>,
-    ResizeConfig,
-);
+#[derive(Clone)]
+struct ImageState {
+    root: PathBuf,
+    config: ResizeConfig,
+    cache: Arc<Mutex<TimedSizedCache<(PathBuf, ImageQuery), Bytes>>>,
+}
 
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
 pub struct ImageQuery {
@@ -80,12 +86,16 @@ impl ImageQuery {
 }
 
 async fn provide_images(
-    State((cache, config)): State<ImageState>,
+    State(ImageState {
+        root,
+        config,
+        cache,
+    }): State<ImageState>,
     Query(query): Query<ImageQuery>,
     Path(path): Path<PathBuf>,
     range: Option<TypedHeader<Range>>,
 ) -> Result<Response> {
-    let (path, raw_mime) = get_path_and_mime(config.path.clone(), path)?;
+    let (path, raw_mime) = get_path_and_mime(root, path)?;
     let dst_mime = query.output()?.unwrap_or(raw_mime);
     let (dst_width, dst_height) = query.size();
     let dpr = query.dpr();
@@ -130,7 +140,10 @@ async fn provide_images(
     let bytes = encode_image(dst_mime, &dst_image, src_image.color())?;
 
     // Cache the processed image
-    cache.lock().await.cache_set((path.clone(), query), bytes.clone());
+    cache
+        .lock()
+        .await
+        .cache_set((path.clone(), query), bytes.clone());
     debug!(
         "Cached processed image: {:?} (mime: {:?}, size {:?}x{:?}, dpr: {})",
         &path, dst_mime, dst_width, dst_height, dpr

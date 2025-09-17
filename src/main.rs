@@ -4,7 +4,7 @@ use console::style;
 use local_ip_address::local_ip;
 use log::info;
 use qrcode::{render::unicode, QrCode};
-use std::net::SocketAddr;
+use std::{net::SocketAddr, path::PathBuf};
 use tower::ServiceBuilder;
 use tower_http::cors::{Any, CorsLayer};
 
@@ -12,6 +12,8 @@ use image_provider::{get_images_router, ResizeConfig};
 
 #[derive(Debug, Clone, Parser)]
 pub struct Config {
+    #[clap(default_value = ".")]
+    path: PathBuf,
     #[clap(long, short, default_value = "3000")]
     port: u16,
     #[clap(flatten)]
@@ -28,7 +30,7 @@ async fn main() {
         .format_target(false)
         .init();
 
-    let images_router = get_images_router(config.resize);
+    let images_router = get_images_router(config.path, config.resize);
 
     let app = images_router.layer(ServiceBuilder::new().layer(CorsLayer::new().allow_origin(Any)));
 
