@@ -19,7 +19,7 @@ use image::{
     codecs::{jpeg::JpegEncoder, png::PngEncoder, webp::WebPEncoder},
     load_from_memory, ColorType, DynamicImage, ImageEncoder, ImageFormat,
 };
-use log::{debug, info, trace};
+use log::{debug, trace};
 use mime_guess::MimeGuess;
 use serde::Deserialize;
 use tokio::{fs::File, io::AsyncReadExt, sync::Mutex};
