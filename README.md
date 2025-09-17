@@ -63,7 +63,7 @@ use image_provider::{get_images_router, ResizeConfig};
 
 // Create images_provider router
 let config = ResizeConfig::builder().build();
-let images_router: Router = get_images_router(config);
+let images_router: Router = get_images_router(path, config);
 ```
 
 Then you can mount `images_router` to your main router.
