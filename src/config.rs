@@ -19,7 +19,7 @@ pub struct ResizeConfig {
     /// `mitchell`  
     /// `bilinear`  
     /// `box`  
-    #[clap(long="resize-filter-type", default_value = "bilinear" )]
+    #[clap(long="resize-filter-type", default_value = "lanczos3" )]
     pub filter_type: String,
 
     /// Slow <-
@@ -39,7 +39,7 @@ impl ResizeConfig {
     pub fn builder() -> ResizeConfigBuilder {
         ResizeConfigBuilder {
             path: Some(".".into()),
-            filter_type: Some("bilinear".into()),
+            filter_type: Some("lanczos3".into()),
             algorithm: Some("interpolation".into()),
         }
     }
