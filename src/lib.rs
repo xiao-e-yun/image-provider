@@ -19,7 +19,7 @@ use image::{
     codecs::{jpeg::JpegEncoder, png::PngEncoder, webp::WebPEncoder},
     load_from_memory, ColorType, DynamicImage, ImageEncoder, ImageFormat,
 };
-use log::{debug, info};
+use log::{debug, info, trace};
 use mime_guess::MimeGuess;
 use serde::Deserialize;
 use tokio::{fs::File, io::AsyncReadExt, sync::Mutex};
@@ -104,8 +104,10 @@ async fn provide_images(
     let dst_mime = query.output()?.unwrap_or(raw_mime);
     let (dst_width, dst_height) = query.size();
     let dpr = query.dpr();
-    info!(
-        "Processing image: {path:?} to mime: {dst_mime:?}, size: {dst_width:?}x{dst_height:?}, dpr: {dpr}"
+
+    debug!(
+        "Processing image: {path:?} to mime: {dst_mime:?}, size: {:?}x{:?}, dpr: {dpr}",
+        dst_width.unwrap_or(0), dst_height.unwrap_or(0)
     );
 
     let range = range.map(|TypedHeader(range)| range);
@@ -115,7 +117,7 @@ async fn provide_images(
     let eq_raw = dst_width.is_none() && dst_height.is_none() && dpr == 1 && raw_mime == dst_mime;
     let exclude = matches!(raw_mime, image::ImageFormat::Ico | image::ImageFormat::Gif);
     if eq_raw || exclude {
-        debug!("Serving original image: {path:?}");
+        trace!("Serving original image: {path:?}");
         let file = load_file(&path).await?;
         let body = KnownSize::file(file).await.unwrap();
         let ranged = Ranged::new(range, body);
@@ -123,8 +125,9 @@ async fn provide_images(
     }
 
     if let Some(cached) = cache.lock().await.cache_get(&(path.clone(), query.clone())) {
-        debug!(
-            "Serving cached image: {path:?} (mime: {dst_mime:?}, size {dst_width:?}x{dst_height:?}, dpr: {dpr})"
+        trace!(
+            "Serving cached image: {path:?} (mime: {dst_mime:?}, size {:?}x{:?}, dpr: {dpr})",
+            dst_width.unwrap_or(0), dst_height.unwrap_or(0)
         );
         let body = KnownSize::seek(Cursor::new(cached.clone())).await.unwrap();
         return Ok((headers, Ranged::new(range, body)).into_response());
@@ -149,14 +152,10 @@ async fn provide_images(
         .lock()
         .await
         .cache_set((path.clone(), query), bytes.clone());
-    debug!(
-        "Cached processed image: {:?} (mime: {:?}, size {:?}x{:?}, dpr: {})",
-        &path, dst_mime, dst_width, dst_height, dpr
-    );
 
     let body = KnownSize::seek(Cursor::new(bytes)).await.unwrap();
 
-    debug!(
+    trace!(
         "Serving processed image: {path:?} (mime: {dst_mime:?}, size {dst_width:?}x{dst_height:?}, dpr: {dpr})"
     );
     Ok((headers, Ranged::new(range, body)).into_response())
