@@ -7,6 +7,7 @@ use serde::Deserialize;
 #[builder(pattern = "owned")]
 pub struct ResizeConfig {
 
+    /// Filter type to use for resizing
     /// `lanczos3`  
     /// `gaussian`  
     /// `catmull-rom`  
@@ -17,17 +18,20 @@ pub struct ResizeConfig {
     #[clap(name="resize-images-filter-type", long, default_value = "lanczos3" )]
     pub filter_type: String,
 
-    /// Slow <-
+    /// Resize algorithm to use
     /// `super-sampling8x`  
     /// `super-sampling4x`  
     /// `super-sampling2x`  
     /// `convolution`  
     /// `interpolation`  
     /// `nearest`  
-    /// -> Fast
     /// (nearest will ignore filter_type)
     #[clap(name="resize-images-algorithm", long, default_value = "interpolation" )]
     pub algorithm: String,
+
+    /// Maximum cached images in memory
+    #[clap(name="resize-images-cache-size", long, default_value_t = 200 )]
+    pub cache_size: usize,
 }
 
 impl ResizeConfig {
@@ -35,6 +39,7 @@ impl ResizeConfig {
         ResizeConfigBuilder {
             filter_type: Some("lanczos3".into()),
             algorithm: Some("interpolation".into()),
+            cache_size: Some(200),
         }
     }
 

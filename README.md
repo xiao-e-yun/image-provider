@@ -29,17 +29,20 @@ Height
 ### Cli
 Download binary from [releases](https://github.com/xiao-e-yun/image-provider/releases).
 ```bash
-Usage: image-provider [OPTIONS]
+Usage: image-provider [OPTIONS] [PATH]
+
+Arguments:
+  [PATH]  [default: .]
 
 Options:
   -p, --port <PORT>
           [default: 3000]
-      --resize-path <PATH>
-          [default: .]
-      --resize-filter-type <FILTER_TYPE>
-          `lanczos3` `gaussian` `catmull-rom` `hamming` `mitchell` `bilinear` `box` [default: lanczos3]
-      --resize-algorithm <ALGORITHM>
-          Slow <- `super-sampling8x` `super-sampling4x` `super-sampling2x` `convolution` `interpolation` `nearest` -> Fast (nearest will ignore filter_type) [default: interpolation]
+      --resize-images-filter-type <resize-images-filter-type>
+          Filter type to use for resizing `lanczos3` `gaussian` `catmull-rom` `hamming` `mitchell` `bilinear` `box` [default: lanczos3]
+      --resize-images-algorithm <resize-images-algorithm>
+          Resize algorithm to use `super-sampling8x` `super-sampling4x` `super-sampling2x` `convolution` `interpolation` `nearest` (nearest will ignore filter_type) [default: interpolation]
+      --resize-images-cache-size <resize-images-cache-size>
+          Maximum cached images in memory [default: 200]
   -v, --verbose...
           Increase logging verbosity
   -q, --quiet...

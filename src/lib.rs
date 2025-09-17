@@ -29,7 +29,12 @@ pub mod config;
 pub use config::*;
 
 pub fn get_images_router(root: PathBuf, config: ResizeConfig) -> Router {
-    let cache = TimedSizedCache::with_size_and_lifespan_and_refresh(200, 30 * 24 * 60 * 60, true);
+    const CACHE_LIFESPAN: u64 = 24 * 60 * 60; // 1 days in seconds
+    let cache = TimedSizedCache::with_size_and_lifespan_and_refresh(
+        config.cache_size,
+        CACHE_LIFESPAN,
+        true,
+    );
     let cache = Arc::new(Mutex::new(cache));
 
     Router::new()
