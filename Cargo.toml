@@ -22,9 +22,18 @@ derive_builder = "0.20"
 image = "0.25"
 fast_image_resize = { version = "5", features = ["image", "rayon"] }
 
-# Binary dependencies
-local-ip-address = "0.6.3"
-qrcode = { version = "0.14.1", default-features = false }
-console = "0.15.11"
-env_logger = "0.11.8"
-clap-verbosity-flag = "3.0.4"
+local-ip-address = { version = "0.6.3", optional = true }
+qrcode = { version = "0.14.1", default-features = false, optional = true }
+console = { version = "0.15.11", optional = true }
+env_logger = { version = "0.11.8", optional = true }
+clap-verbosity-flag = { version = "3.0.4", optional = true }
+
+[lib]
+name = "image_provider"
+
+[features]
+cli = ["local-ip-address", "qrcode", "console", "env_logger", "clap-verbosity-flag"]
+
+[[bin]]
+name = "image-provider"
+required-features = ["cli"]

@@ -24,7 +24,9 @@ use serde::Deserialize;
 use tokio::{fs::File, io::AsyncReadExt, sync::Mutex};
 use log::{info, debug};
 
-use crate::config::ResizeConfig;
+pub mod config;
+
+pub use config::*;
 
 pub fn get_images_router(config: ResizeConfig) -> Router {
     let cache = TimedSizedCache::with_size_and_lifespan_and_refresh(200, 30 * 24 * 60 * 60, true);

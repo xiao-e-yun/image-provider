@@ -1,17 +1,14 @@
-pub mod config;
-pub mod images;
-
 use clap::Parser;
 use clap_verbosity_flag::{InfoLevel, Verbosity};
-use config::ResizeConfig;
 use console::style;
-use images::get_images_router;
 use local_ip_address::local_ip;
+use log::info;
 use qrcode::{render::unicode, QrCode};
 use std::net::SocketAddr;
 use tower::ServiceBuilder;
-use tower_http::{ cors::{Any, CorsLayer}, };
-use log::info;
+use tower_http::cors::{Any, CorsLayer};
+
+use image_provider::{get_images_router, ResizeConfig};
 
 #[derive(Debug, Clone, Parser)]
 pub struct Config {
@@ -33,10 +30,7 @@ async fn main() {
 
     let images_router = get_images_router(config.resize);
 
-    let app = images_router.layer(
-        ServiceBuilder::new()
-            .layer(CorsLayer::new().allow_origin(Any)),
-    );
+    let app = images_router.layer(ServiceBuilder::new().layer(CorsLayer::new().allow_origin(Any)));
 
     let addr = SocketAddr::from(([0, 0, 0, 0], config.port));
     let listener = tokio::net::TcpListener::bind(addr).await.unwrap();
