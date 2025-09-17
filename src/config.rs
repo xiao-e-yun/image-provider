@@ -9,7 +9,7 @@ use serde::Deserialize;
 #[builder(pattern = "owned")]
 pub struct ResizeConfig {
 
-    #[clap(long="resize-path", default_value = "." )]
+    #[clap(name="resize-images-path", long, default_value = "." )]
     pub path: PathBuf,
 
     /// `lanczos3`  
@@ -19,7 +19,7 @@ pub struct ResizeConfig {
     /// `mitchell`  
     /// `bilinear`  
     /// `box`  
-    #[clap(long="resize-filter-type", default_value = "lanczos3" )]
+    #[clap(name="resize-images-filter-type", long, default_value = "lanczos3" )]
     pub filter_type: String,
 
     /// Slow <-
@@ -31,7 +31,7 @@ pub struct ResizeConfig {
     /// `nearest`  
     /// -> Fast
     /// (nearest will ignore filter_type)
-    #[clap(long="resize-algorithm", default_value = "interpolation" )]
+    #[clap(name="resize-images-algorithm", long, default_value = "interpolation" )]
     pub algorithm: String,
 }
 
