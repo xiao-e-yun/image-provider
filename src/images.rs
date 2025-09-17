@@ -1,185 +1,272 @@
-use std::{collections::HashMap, fs};
+use std::{io::Cursor, path::PathBuf, sync::Arc};
 
 use axum::{
-    body::Bytes,
-    extract::{Query, State},
-    http::{HeaderMap, HeaderValue, StatusCode, Uri},
+    extract::{Path, Query, State},
+    http::{
+        header::{CACHE_CONTROL, CONTENT_TYPE, X_CONTENT_TYPE_OPTIONS},
+        HeaderMap, HeaderValue, StatusCode,
+    },
+    response::{IntoResponse, Response},
+    routing::get,
     Router,
 };
-use axum_response_cache::CacheLayer;
-use cached::TimedSizedCache;
-use fast_image_resize::{
-    images::Image, FilterType, IntoImageView, ResizeAlg, ResizeOptions, Resizer,
-};
+use axum_extra::{headers::Range, TypedHeader};
+use axum_range::{KnownSize, Ranged};
+use bytes::Bytes;
+use cached::{Cached, TimedSizedCache};
+use fast_image_resize::{images::Image, IntoImageView, ResizeAlg, ResizeOptions, Resizer};
 use image::{
     codecs::{jpeg::JpegEncoder, png::PngEncoder, webp::WebPEncoder},
-    ColorType, ImageEncoder, ImageFormat,
+    load_from_memory, ColorType, DynamicImage, ImageEncoder, ImageFormat,
 };
 use mime_guess::MimeGuess;
+use serde::Deserialize;
+use tokio::{fs::File, io::AsyncReadExt, sync::Mutex};
+use tracing::info;
 
-use crate::config::Config;
+use crate::config::{Config, ResizeConfig};
 
 pub fn get_images_router(config: &Config) -> Router {
-    let mut router = Router::new()
-        .fallback(provide_images)
-        .with_state(config.clone());
+    let cache = TimedSizedCache::with_size_and_lifespan_and_refresh(200, 30 * 24 * 60 * 60, true);
+    let cache = Arc::new(Mutex::new(cache));
 
-    let size = config.resize.cache;
-    if size != 0 {
-        let cache =
-            TimedSizedCache::with_size_and_lifespan_and_refresh(size, 30 * 24 * 60 * 60, true);
-        let cache = CacheLayer::with(cache);
-        router = router.layer(cache);
+    Router::new()
+        .route("/{*path}", get(provide_images))
+        .route(
+            "/",
+            get(|| async { (StatusCode::NOT_FOUND, "File not found".to_string()) }),
+        )
+        .with_state((cache, config.resize.clone()))
+}
+
+type Error = (StatusCode, String);
+type Result<T, E = Error> = std::result::Result<T, E>;
+
+type ImageState = (
+    Arc<Mutex<TimedSizedCache<(PathBuf, ImageQuery), Bytes>>>,
+    ResizeConfig,
+);
+
+#[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
+pub struct ImageQuery {
+    pub output: Option<String>,
+    pub dpr: Option<u32>,
+    pub w: Option<u32>,
+    pub h: Option<u32>,
+}
+
+impl ImageQuery {
+    fn output(&self) -> Result<Option<ImageFormat>> {
+        self.output
+            .as_ref()
+            .map(|ext| {
+                find_image_mime(MimeGuess::from_ext(ext)).ok_or((
+                    StatusCode::BAD_REQUEST,
+                    format!("Unsupported output format: {ext}"),
+                ))
+            })
+            .transpose()
     }
 
-    router
+    fn size(&self) -> (Option<u32>, Option<u32>) {
+        (self.w, self.h)
+    }
+
+    fn dpr(&self) -> u32 {
+        self.dpr.unwrap_or(1).clamp(1, 3)
+    }
 }
 
 async fn provide_images(
-    State(config): State<Config>,
-    Query(query): Query<HashMap<String, String>>,
-    uri: Uri,
-) -> Result<(HeaderMap, Bytes), StatusCode> {
-    let root = &config.path;
-    let path = path_clean::clean(uri.path());
+    State((cache, config)): State<ImageState>,
+    Query(query): Query<ImageQuery>,
+    Path(path): Path<PathBuf>,
+    range: Option<TypedHeader<Range>>,
+) -> Result<Response> {
+    info!("Received request for image: {:?}", path);
+    let (path, raw_mime) = get_path_and_mime(config.path.clone(), path)?;
+    info!("Resolved path: {:?} with raw mime: {:?}", path, raw_mime);
 
-    let Ok(path) = path.strip_prefix("/") else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
+    let dst_mime = query.output()?.unwrap_or(raw_mime);
+    let (dst_width, dst_height) = query.size();
+    let dpr = query.dpr();
+    info!(
+        "Processing image: {:?} to mime: {:?}, size: {:?}x{:?}, dpr: {}",
+        path, dst_mime, dst_width, dst_height, dpr
+    );
 
-    let path = root.join(&path);
+    let range = range.map(|TypedHeader(range)| range);
+    info!("Range header: {:?}", range);
+    let headers = get_response_headers(&dst_mime);
+    info!("Response headers: {:?}", headers);
 
-    if !path.exists() {
-        return Err(StatusCode::NOT_FOUND);
+    // If no resizing is needed, serve the original file directly
+    let eq_raw = dst_width.is_none() && dst_height.is_none() && dpr == 1 && raw_mime == dst_mime;
+    let exclude = matches!(raw_mime, image::ImageFormat::Ico | image::ImageFormat::Gif);
+    if eq_raw || exclude {
+        info!("Serving original image: {:?}", path);
+        let file = load_file(&path).await?;
+        let body = KnownSize::file(file).await.unwrap();
+        let ranged = Ranged::new(range, body);
+        return Ok((headers, ranged).into_response());
     }
 
-    let Some(mime) = match query.get("output") {
-        Some(ext) => MimeGuess::from_ext(ext),
-        None => MimeGuess::from_path(&path),
+    if let Some(cached) = cache.lock().await.cache_get(&(path.clone(), query.clone())) {
+        info!("Serving cached image: {:?} with query: {:?}", path, query);
+        let body = KnownSize::seek(Cursor::new(cached.clone())).await.unwrap();
+        return Ok((headers, Ranged::new(range, body)).into_response());
     }
-    .first() else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
 
-    let Some(format) = ImageFormat::from_mime_type(&mime) else {
-        return Err(StatusCode::BAD_REQUEST);
-    };
+    let file = load_file(&path).await?;
+    let src_image = load_image(file).await?;
 
+    let (dst_width, dst_height) = get_output_size(
+        (src_image.width(), src_image.height()),
+        (dst_width, dst_height),
+        dpr,
+    );
+
+    info!("Resizing image: {:?} with query: {:?}", path, query);
+
+    let mut dst_image = Image::new(dst_width, dst_height, src_image.pixel_type().unwrap());
+    resize_image(&config, &src_image, &mut dst_image)?;
+
+    let bytes = encode_image(dst_mime, &dst_image, src_image.color())?;
+
+    // Cache the processed image
+    cache.lock().await.cache_set((path, query), bytes.clone());
+
+    let body = KnownSize::seek(Cursor::new(bytes)).await.unwrap();
+
+    Ok((headers, Ranged::new(range, body)).into_response())
+}
+
+fn get_path_and_mime(root: PathBuf, rel_path: PathBuf) -> Result<(PathBuf, ImageFormat)> {
+    let path = path_clean::clean(rel_path);
+    let path = path.strip_prefix("/").unwrap_or(&path);
+    let path = root.join(path);
+
+    if !path.exists() || !path.is_file() {
+        return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
+    }
+
+    match find_image_mime(MimeGuess::from_path(&path)) {
+        Some(mime) => Ok((path.clone(), mime)),
+        None => Err((StatusCode::BAD_REQUEST, "Unsupported file type".to_string())),
+    }
+}
+
+fn find_image_mime(mime: MimeGuess) -> Option<ImageFormat> {
+    mime.into_iter()
+        .flat_map(|m| ImageFormat::from_mime_type(&m))
+        .next()
+}
+
+fn get_response_headers(image_format: &ImageFormat) -> HeaderMap {
+    info!("Setting response headers for format: {:?}", image_format);
     let mut headers = HeaderMap::new();
-    headers.insert(
-        "Content-Type",
-        HeaderValue::from_str(mime.as_ref()).unwrap(),
-    );
-    headers.insert(
-        "Cache-Control",
-        HeaderValue::from_static("public, max-age=31536000"),
-    );
-
-    let dpr: u32 = query.get("dpr").and_then(|s| s.parse().ok()).unwrap_or(1);
-
-    let dst_width: Option<u32> = query.get("w").and_then(|s| s.parse().ok());
-    let dst_height: Option<u32> = query.get("h").and_then(|s| s.parse().ok());
-    if dst_width.is_none() && dst_height.is_none() {
-        let bytes = fs::read(path)
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?
-            .into();
-        return Ok((headers, bytes));
+    for (name, value) in [
+        (CONTENT_TYPE, image_format.to_mime_type()),
+        (CACHE_CONTROL, "public, max-age=31536000"),
+        (X_CONTENT_TYPE_OPTIONS, "nosniff"),
+    ] {
+        info!("Setting header: {}: {}", name, value);
+        headers.insert(name, HeaderValue::from_static(value));
     }
+    info!("Response headers set: {:?}", headers);
+    headers
+}
 
-    let image = image::open(&path).map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+async fn load_file(path: &PathBuf) -> Result<File> {
+    info!("Loading file: {:?}", path);
+    File::open(&path).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to read image".to_string(),
+        )
+    })
+}
 
-    let src_width = image.width();
-    let src_height = image.height();
+fn get_output_size(src: (u32, u32), dst: (Option<u32>, Option<u32>), dpr: u32) -> (u32, u32) {
+    let (src_width, src_height) = src;
+    let (dst_width, dst_height) = dst;
     let aspect_ratio = src_width as f32 / src_height as f32;
 
-    //Weserv-like image resizing
-    let (dst_width, dst_height) = match (dst_width, dst_height) {
-        (Some(dst_width), Some(dst_height)) => (dst_width * dpr, dst_height * dpr),
-        (Some(dst_width), None) => {
-            let dst_height = (dst_width as f32 / aspect_ratio).round() as u32;
-            (dst_width * dpr, dst_height * dpr)
-        }
-        (None, Some(dst_height)) => {
-            let dst_width = (dst_height as f32 * aspect_ratio).round() as u32;
-            (dst_width * dpr, dst_height * dpr)
-        }
-        (None, None) => unreachable!(),
+    let (mut width, mut height) = match (dst_width, dst_height) {
+        (Some(w), Some(h)) => (w, h),
+        (Some(w), None) => (w, (w as f32 / aspect_ratio).round() as u32),
+        (None, Some(h)) => ((h as f32 * aspect_ratio).round() as u32, h),
+        (None, None) => (src_width, src_height),
     };
 
-    let mut dst_image = Image::new(dst_width, dst_height, image.pixel_type().unwrap());
+    width *= dpr;
+    height *= dpr;
 
+    (width, height)
+}
+
+async fn load_image(mut file: File) -> Result<DynamicImage> {
+    let mut buffer = Vec::new();
+    file.read_to_end(&mut buffer).await.unwrap();
+    load_from_memory(&buffer).map_err(|e| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            format!("Failed to decode image: {e}"),
+        )
+    })
+}
+
+fn resize_image(
+    config: &ResizeConfig,
+    src_image: &DynamicImage,
+    dst_image: &mut Image<'_>,
+) -> Result<()> {
     let mut resizer = Resizer::new();
 
     let algorithm = if cfg!(debug_assertions) {
         ResizeAlg::Nearest
     } else {
-        let filter_type = match config.resize.filter_type.as_str() {
-            "lanczos3" => FilterType::Lanczos3,
-            "gaussian" => FilterType::Gaussian,
-            "catmull-rom" => FilterType::CatmullRom,
-            "hamming" => FilterType::Hamming,
-            "mitchell" => FilterType::Mitchell,
-            "bilinear" => FilterType::Bilinear,
-            "box" => FilterType::Box,
-            _ => FilterType::Lanczos3,
-        };
-
-        match config.resize.algorithm.as_str() {
-            "super-sampling8x" => ResizeAlg::SuperSampling(filter_type, 8),
-            "super-sampling4x" => ResizeAlg::SuperSampling(filter_type, 4),
-            "super-sampling2x" => ResizeAlg::SuperSampling(filter_type, 2),
-            "interpolation" => ResizeAlg::Interpolation(filter_type),
-            "convolution" => ResizeAlg::Convolution(filter_type),
-            "nearest" => ResizeAlg::Nearest,
-            _ => ResizeAlg::Interpolation(filter_type),
-        }
+        config.resize_algorithm()
     };
     let options = ResizeOptions::new()
         .resize_alg(algorithm)
         .fit_into_destination(Some((0.5, 0.5)));
 
     resizer
-        .resize(&image, &mut dst_image, Some(&options))
-        .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)?;
+        .resize(src_image, dst_image, Some(&options))
+        .map_err(|_| {
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Failed to resize image".to_string(),
+            )
+        })
+}
 
-    let mut buffer = vec![];
-
-    match format {
-        ImageFormat::WebP => write_image(
-            WebPEncoder::new_lossless(&mut buffer),
-            dst_image,
-            dst_width,
-            dst_height,
-            image.color(),
-        ),
-        ImageFormat::Png => write_image(
-            PngEncoder::new(&mut buffer),
-            dst_image,
-            dst_width,
-            dst_height,
-            image.color(),
-        ),
-        ImageFormat::Jpeg => write_image(
-            JpegEncoder::new(&mut buffer),
-            dst_image,
-            dst_width,
-            dst_height,
-            image.color(),
-        ),
-        _ => todo!("Unsupported image format: {:?}", format),
-    }?;
-
-    fn write_image(
-        encoder: impl ImageEncoder,
-        dst_image: Image<'_>,
-        dst_width: u32,
-        dst_height: u32,
-        color: ColorType,
-    ) -> Result<(), StatusCode> {
-        encoder
-            .write_image(dst_image.buffer(), dst_width, dst_height, color.into())
-            .map_err(|_| StatusCode::INTERNAL_SERVER_ERROR)
+fn encode_image(format: ImageFormat, image: &Image<'_>, color: ColorType) -> Result<Bytes> {
+    macro_rules! match_format {
+        ($format: expr , $( $target: pat => $encoder: expr, )+ ) => {
+            match $format {$(
+                $target => $encoder
+                    .write_image(image.buffer(), image.width(), image.height(), color.into())
+                    .map_err(|e| {
+                        (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            format!("Failed to encode image: {e}"),
+                        )
+                    }),
+            )+
+                _ => Err((StatusCode::BAD_REQUEST, "Unsupported output format".to_string())),
+            }
+        };
     }
 
-    Ok((headers, buffer.into()))
+    let mut bytes = vec![];
+    match_format! {
+        format,
+        ImageFormat::WebP => WebPEncoder::new_lossless(&mut bytes),
+        ImageFormat::Png => PngEncoder::new(&mut bytes),
+        ImageFormat::Jpeg => JpegEncoder::new(&mut bytes),
+    }?;
+
+    Ok(Bytes::from(bytes))
 }
