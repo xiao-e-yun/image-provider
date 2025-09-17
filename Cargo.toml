@@ -2,6 +2,11 @@
 name = "image-provider"
 version = "0.1.0"
 edition = "2021"
+license = "BSD-3-Clause"
+description = "Axum-based image resizer"
+authors = ["xiao-e-yun <a0970323059@gmail.com>"]
+repository = "https://github.com/xiao-e-yun/image-provider"
+keywords = ["axum", "image", "resizer"]
 
 [dependencies]
 log = "0.4"
