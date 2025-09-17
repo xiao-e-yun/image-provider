@@ -14,7 +14,7 @@ http://localhost:3000/path/to/image.jpg?dpr=2&w=100&h=100&output=webp
 > Such as `wsrv.nl`
 
 Output Format
-`output: \`webp\` \`jpeg\` \`png\``
+`output: "webp", "jpeg", "png"`
 
 Device Pixel Ratio
 `dpr: 1 ~ 3`
@@ -26,8 +26,8 @@ Height
 `h: Number`
 
 ## Usage
-### Binary
-Download binary from `releases`.
+### Cli
+Download binary from [releases](https://github.com/xiao-e-yun/image-provider/releases).
 ```bash
 Usage: image-provider [OPTIONS]
 
