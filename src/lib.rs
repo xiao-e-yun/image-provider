@@ -63,9 +63,10 @@ struct ImageState {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
 pub struct ImageQuery {
     pub output: Option<String>,
-    pub dpr: Option<f32>,
+    pub dpr: Option<String>,
     pub w: Option<u32>,
     pub h: Option<u32>,
+    pub ce: Option<String>,
 }
 
 impl ImageQuery {
@@ -86,7 +87,20 @@ impl ImageQuery {
     }
 
     fn dpr(&self) -> f32 {
-        self.dpr.unwrap_or(1.).clamp(0.5, 5.)
+        self.dpr
+            .clone()
+            .unwrap_or("1".into())
+            .parse::<f32>()
+            .unwrap()
+            .clamp(0.5, 5.)
+    }
+
+    fn ce(&self) -> bool {
+        match self.ce.as_deref() {
+            Some("0") | Some("false") | Some("no") => false,
+            Some(_) => true,
+            None => false,
+        }
     }
 }
 
@@ -104,17 +118,22 @@ async fn provide_images(
     let dst_mime = query.output()?.unwrap_or(raw_mime);
     let (dst_width, dst_height) = query.size();
     let dpr = query.dpr();
+    let ce = query.ce();
 
     debug!(
-        "Processing image: {path:?} to mime: {dst_mime:?}, size: {:?}x{:?}, dpr: {dpr}",
-        dst_width.unwrap_or(0), dst_height.unwrap_or(0)
+        "Processing image: {path:?} to mime: {dst_mime:?}, size: {:?}x{:?}, dpr: {dpr}, ce: {ce}",
+        dst_width.unwrap_or(0),
+        dst_height.unwrap_or(0)
     );
 
     let range = range.map(|TypedHeader(range)| range);
     let headers = get_response_headers(&dst_mime);
 
     // If no resizing is needed, serve the original file directly
-    let eq_raw = dst_width.is_none() && dst_height.is_none() && f32::EPSILON > (dpr - 1.0) && raw_mime == dst_mime;
+    let eq_raw = dst_width.is_none()
+        && dst_height.is_none()
+        && f32::EPSILON > (dpr - 1.0)
+        && raw_mime == dst_mime;
     let exclude = matches!(raw_mime, image::ImageFormat::Ico | image::ImageFormat::Gif);
     if eq_raw || exclude {
         trace!("Serving original image: {path:?}");
@@ -127,7 +146,8 @@ async fn provide_images(
     if let Some(cached) = cache.lock().await.cache_get(&(path.clone(), query.clone())) {
         trace!(
             "Serving cached image: {path:?} (mime: {dst_mime:?}, size {:?}x{:?}, dpr: {dpr})",
-            dst_width.unwrap_or(0), dst_height.unwrap_or(0)
+            dst_width.unwrap_or(0),
+            dst_height.unwrap_or(0)
         );
         let body = KnownSize::seek(Cursor::new(cached.clone())).await.unwrap();
         return Ok((headers, Ranged::new(range, body)).into_response());
@@ -140,6 +160,7 @@ async fn provide_images(
         (src_image.width(), src_image.height()),
         (dst_width, dst_height),
         dpr,
+        ce,
     );
 
     let mut dst_image = Image::new(dst_width, dst_height, src_image.pixel_type().unwrap());
@@ -207,7 +228,12 @@ async fn load_file(path: &PathBuf) -> Result<File> {
     })
 }
 
-fn get_output_size(src: (u32, u32), dst: (Option<u32>, Option<u32>), dpr: f32) -> (u32, u32) {
+fn get_output_size(
+    src: (u32, u32),
+    dst: (Option<u32>, Option<u32>),
+    dpr: f32,
+    ce: bool,
+) -> (u32, u32) {
     let (src_width, src_height) = src;
     let (dst_width, dst_height) = dst;
     let aspect_ratio = src_width as f32 / src_height as f32;
@@ -221,6 +247,17 @@ fn get_output_size(src: (u32, u32), dst: (Option<u32>, Option<u32>), dpr: f32) -
 
     width = (width as f32 * dpr).round() as u32;
     height = (height as f32 * dpr).round() as u32;
+
+    if ce {
+        let dst_aspect_ratio = width as f32 / height as f32;
+        if dst_aspect_ratio > aspect_ratio && width > src_width {
+            width = src_width;
+            height = (width as f32 / dst_aspect_ratio).round() as u32;
+        } else if dst_aspect_ratio < aspect_ratio && height > src_height {
+            height = src_height;
+            width = (height as f32 * dst_aspect_ratio).round() as u32;
+        }
+    }
 
     (width, height)
 }
