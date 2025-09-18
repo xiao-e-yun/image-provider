@@ -2,4 +2,4 @@
 .PHONY: build
 
 build:
-	cargo run --features=_cli -r
+	cargo build --features=_cli -r
