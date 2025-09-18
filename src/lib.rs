@@ -1,4 +1,4 @@
-use std::{io::Cursor, path::PathBuf, sync::Arc};
+use std::{f32, io::Cursor, path::PathBuf, sync::Arc};
 
 use axum::{
     extract::{Path, Query, State},
@@ -63,7 +63,7 @@ struct ImageState {
 #[derive(Debug, Clone, Deserialize, PartialEq, Eq, Hash)]
 pub struct ImageQuery {
     pub output: Option<String>,
-    pub dpr: Option<u32>,
+    pub dpr: Option<f32>,
     pub w: Option<u32>,
     pub h: Option<u32>,
 }
@@ -85,8 +85,8 @@ impl ImageQuery {
         (self.w, self.h)
     }
 
-    fn dpr(&self) -> u32 {
-        self.dpr.unwrap_or(1).clamp(1, 3)
+    fn dpr(&self) -> f32 {
+        self.dpr.unwrap_or(1.).clamp(0.5, 5.)
     }
 }
 
@@ -114,7 +114,7 @@ async fn provide_images(
     let headers = get_response_headers(&dst_mime);
 
     // If no resizing is needed, serve the original file directly
-    let eq_raw = dst_width.is_none() && dst_height.is_none() && dpr == 1 && raw_mime == dst_mime;
+    let eq_raw = dst_width.is_none() && dst_height.is_none() && f32::EPSILON > (dpr - 1.0) && raw_mime == dst_mime;
     let exclude = matches!(raw_mime, image::ImageFormat::Ico | image::ImageFormat::Gif);
     if eq_raw || exclude {
         trace!("Serving original image: {path:?}");
@@ -207,7 +207,7 @@ async fn load_file(path: &PathBuf) -> Result<File> {
     })
 }
 
-fn get_output_size(src: (u32, u32), dst: (Option<u32>, Option<u32>), dpr: u32) -> (u32, u32) {
+fn get_output_size(src: (u32, u32), dst: (Option<u32>, Option<u32>), dpr: f32) -> (u32, u32) {
     let (src_width, src_height) = src;
     let (dst_width, dst_height) = dst;
     let aspect_ratio = src_width as f32 / src_height as f32;
@@ -219,8 +219,8 @@ fn get_output_size(src: (u32, u32), dst: (Option<u32>, Option<u32>), dpr: u32) -
         (None, None) => (src_width, src_height),
     };
 
-    width *= dpr;
-    height *= dpr;
+    width = (width as f32 * dpr).round() as u32;
+    height = (height as f32 * dpr).round() as u32;
 
     (width, height)
 }
