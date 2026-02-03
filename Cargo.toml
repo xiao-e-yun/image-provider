@@ -11,7 +11,7 @@ keywords = ["axum", "image", "resizer"]
 [dependencies]
 log = "0.4"
 cached = "0.54"
-bytes = "1.10"
+bytes = "1.11"
 axum = "0.8"
 axum-range = "0.5"
 axum-extra = "0.10"
