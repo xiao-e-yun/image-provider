@@ -6,7 +6,6 @@ use serde::Deserialize;
 #[derive(Debug, Clone, Deserialize, Parser, Builder)]
 #[builder(pattern = "owned")]
 pub struct ResizeConfig {
-
     /// Filter type to use for resizing
     /// `lanczos3`  
     /// `gaussian`  
@@ -15,7 +14,7 @@ pub struct ResizeConfig {
     /// `mitchell`  
     /// `bilinear`  
     /// `box`  
-    #[clap(name="resize-images-filter-type", long, default_value = "lanczos3" )]
+    #[clap(name = "resize-images-filter-type", long, default_value = "lanczos3")]
     pub filter_type: String,
 
     /// Resize algorithm to use
@@ -26,11 +25,15 @@ pub struct ResizeConfig {
     /// `interpolation`  
     /// `nearest`  
     /// (nearest will ignore filter_type)
-    #[clap(name="resize-images-algorithm", long, default_value = "interpolation" )]
+    #[clap(
+        name = "resize-images-algorithm",
+        long,
+        default_value = "interpolation"
+    )]
     pub algorithm: String,
 
     /// Maximum cached images in memory
-    #[clap(name="resize-images-cache-size", long, default_value_t = 200 )]
+    #[clap(name = "resize-images-cache-size", long, default_value_t = 200)]
     pub cache_size: usize,
 }
 
