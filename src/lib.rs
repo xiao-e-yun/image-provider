@@ -183,9 +183,18 @@ async fn provide_images(
 }
 
 fn get_path_and_mime(root: PathBuf, rel_path: PathBuf) -> Result<(PathBuf, ImageFormat)> {
-    let path = path_clean::clean(rel_path);
-    let path = path.strip_prefix("/").unwrap_or(&path);
-    let path = root.join(path);
+    use std::path::Component;
+
+    let cleaned = path_clean::clean(rel_path);
+
+    let is_valid = cleaned
+        .components()
+        .all(|c| matches!(c, Component::Normal(_)));
+    if !is_valid {
+        return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
+    }
+
+    let path = root.join(&cleaned);
 
     if !path.exists() || !path.is_file() {
         return Err((StatusCode::NOT_FOUND, "File not found".to_string()));
