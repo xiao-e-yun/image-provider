@@ -91,7 +91,7 @@ impl ImageQuery {
             .clone()
             .unwrap_or("1".into())
             .parse::<f32>()
-            .unwrap()
+            .unwrap_or(1.0)
             .clamp(0.5, 5.)
     }
 
@@ -273,7 +273,12 @@ fn get_output_size(
 
 async fn load_image(mut file: File) -> Result<DynamicImage> {
     let mut buffer = Vec::new();
-    file.read_to_end(&mut buffer).await.unwrap();
+    file.read_to_end(&mut buffer).await.map_err(|_| {
+        (
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "Failed to read image".to_string(),
+        )
+    })?;
     load_from_memory(&buffer).map_err(|e| {
         (
             StatusCode::INTERNAL_SERVER_ERROR,
